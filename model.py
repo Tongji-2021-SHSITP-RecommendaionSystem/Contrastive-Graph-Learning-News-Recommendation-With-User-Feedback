@@ -1,3 +1,4 @@
+from distutils.command.config import config
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,6 +20,7 @@ class MODEL(torch.nn.Module):
         self.category_encoder = CategoryEncoder(config)
         self.click_predictor = DotProductClickPredictor()
         self.gcn = GCN(self.config.num_filters,self.config.embedding_mid_dim,self.config.cuda)
+        self.gat = GAT(self.config.num_filters,self.config.num_filters//2,self.config.embedding_mid_dim,self.config.dropout,0.1,self.config.num_attention_heads)
         self.gcn2 = GCN(self.config.num_filters,self.config.embedding_mid_dim,self.config.cuda)
         self.rgcn0=heteroRGCNLayer(self.config.embedding_dim,self.config.embedding_dim,["news","1","category"],self.config.cuda)
         self.rgcn=heteroRGCNLayer(self.config.embedding_mid_dim,self.config.embedding_mid_dim,["category","1","news"],self.config.cuda)
@@ -48,16 +50,23 @@ class MODEL(torch.nn.Module):
         # news_list_length,num_filters
         news_feature=self.news_encoder(news_list)
         if self.config.cuda:
-            news_feature=news_feature.cuda()
+            news_feature=news_feature.cuda() 
+        news_feature_gcn=self.gat(news_feature,news_adj)
+        padding=torch.zeros((1,self.config.embedding_mid_dim),dtype=torch.float)
+        if self.config.cuda:
+            padding=padding.cuda()
+        # GAT
+
         # normalize
-        news_adj_normal=self.normalize(news_adj)
+        '''
+        news_adj_normal=self.normalize(torch.empty_like(news_adj).bernoulli(1-self.config.node_dropout) * news_adj)
         # print(news_feature.device)
         news_feature_gcn=self.gcn(news_adj_normal,news_feature)
         # news_feature_gcn=news_feature
         # print(news_feature_gcn.size())        
-        padding=torch.zeros((1,self.config.embedding_mid_dim),dtype=torch.float)
-        if self.config.cuda:
-            padding=padding.cuda()
+
+        '''
+        '''
         #---------------------------------category----------------------------------------------------------
         categories=np.zeros((self.config.category_num),dtype= np.int)
         for i in range(1,self.config.category_num):
@@ -67,7 +76,6 @@ class MODEL(torch.nn.Module):
             categories=categories.cuda()
         cat_feature=self.category_encoder(categories)
         news_c_adj.append((self.config.category_num-1,news_feature_gcn.size()[0]-1))
-        '''
         #---------------------------------news and category------------------------------------------------
         len_edges=len(news_c_adj)
         c_news_adj=[]
@@ -76,7 +84,6 @@ class MODEL(torch.nn.Module):
         device="cuda:"+str(self.config.device)
         ncgraph0=dgl.heterograph({('news','1','category'):c_news_adj},device=device)
         cat_feature=self.rgcn0(ncgraph0,{"news":news_feature,"category":cat_feature})
-        '''
         #---------------------------------category to category---------------------------------------------
         category_adj_normal=self.normalize(category_adj)
         # print(category_adj_normal.size(),cat_feature.size())
@@ -89,7 +96,7 @@ class MODEL(torch.nn.Module):
         ncgraph=dgl.heterograph({('category','1','news'):news_c_adj},device=device)
         news_feature_gcn=self.rgcn(ncgraph,{"category":cat_feature_gcn,"news":news_feature_gcn})
         #-----------------------------------------------------------------------------------------------
-        
+        '''
         click_news_vector_one=padding
         for j in clicked_news[0]:
             if(j !=-1):
@@ -174,11 +181,17 @@ class MODEL(torch.nn.Module):
         loss=0
         targets=torch.zeros((self.config.batch_size),dtype=torch.long).cuda()
         # torch.cat((click_probability[:,0],click_probability[:,self.config.real_size:]),1)
+        '''
+        def calcSSL(probability):
+            posScore = tf.exp(tf.reduce_sum(hyperLat * gnnLat, axis=1))
+            negScore = tf.reduce_sum(tf.exp(gnnLat @ tf.transpose(hyperLat)), axis=1)
+            uLoss = tf.reduce_sum(-tf.log(posScore / (negScore + 1e-8) + 1e-8))
+            return uLoss
         for i in range(0,self.config.real_size):
             loss+=crossentropyloss(torch.cat((click_probability[:,i:i+1],click_probability[:,self.config.real_size:]),1),targets)
         # [1,2,3] [1,2,3]
         # [4,4,4] [5,5,5]
-        """
+        
         # batch_size * (1 + K + num_clicked_news_a_user), num_categories
         y_pred = self.topic_predictor(
             torch.cat((candidate_news_vector, clicked_news_vector),
@@ -190,8 +203,8 @@ class MODEL(torch.nn.Module):
         class_weight[0] = 0
         criterion = nn.CrossEntropyLoss(weight=class_weight)
         topic_classification_loss = criterion(y_pred, y)
-        """
-        return last_probability,loss #, topic_classification_loss
+        '''
+        return last_probability,self.LOSS(last_probability),candidate_news_vector,user_vector#, topic_classification_loss
     
     def MRR(self,click_probability,debug=False):
         rank=torch.ones((self.config.batch_size,1),dtype=torch.int)
@@ -238,8 +251,10 @@ class MODEL(torch.nn.Module):
         # print(y_n.size())
         y_n=y_n.contiguous().view(self.config.batch_size,n)
         # print(y_p,y_n)
-        # print(y_p[0],y_n[0])       
-        score_tot=y_p-y_n# torch.gt(y_p,y_n)
+        # print(y_p[0],y_n[0])      
+        score_tot=-y_p+y_n+1.0
+        score_tot= torch.where(score_tot<0.0,torch.full_like(score_tot, 0.0), score_tot)
+        # score_tot=torch.sum(score_tot)# torch.gt(y_p,y_n)
         '''
         for i in range(self.config.batch_size):
             # score=0
@@ -252,9 +267,9 @@ class MODEL(torch.nn.Module):
                 print(click_probability[i],score_tot[i])
         '''
         # score_tot= torch.where(torch.isnan(score_tot), torch.full_like(score_tot, 0), score_tot)# score_tot**0.2
-        score_tot= torch.where(score_tot>0.5,torch.full_like(score_tot, 0.5), score_tot)
+        # score_tot= torch.where(score_tot>0.5,torch.full_like(score_tot, 0.5), score_tot)
         
-        return torch.mean(score_tot)
+        return torch.sum(score_tot)
     
     def AUC(self,click_probability,debug=False):
         n=self.config.real_size*(self.config.candidate_size-self.config.real_size)
@@ -422,7 +437,7 @@ class NewsEncoder(torch.nn.Module):
         # batch_size, num_filters, num_words_title
         activated_title_vector = F.dropout(F.relu(convoluted_title_vector),
                                            p=self.config.dropout,
-                                           training=self.training)
+                                           training=True)
         # batch_size, num_filters
         weighted_title_vector = self.title_attention(
             activated_title_vector.transpose(1, 2))
@@ -469,11 +484,11 @@ class heteroRGCNLayer(nn.Module):
             returnnode=dsttype
             Wh = self.weight[etype](feat_dict[srctype])
             # print("wh",Wh)          
-            G.nodes[srctype ] .data[ 'wh_%s'%etype] = Wh          
+            G.nodes[srctype] .data[ 'wh_%s'%etype] = Wh          
             funcs[etype] = (fn.copy_u( 'wh_%s' % etype,'m'), fn.mean( 'm', 'h'))
             # print("funcs",funcs)
             # print(G.nodes["news"])
-        G.multi_update_all(funcs,'sum' )  
+        G.multi_update_all(funcs,'sum' )
         return G.nodes[returnnode].data['h']
     
 class UserEncoder(torch.nn.Module):
@@ -556,5 +571,76 @@ class DotProductClickPredictor(torch.nn.Module):
         """
         # batch_size, candidate_size
         probability = torch.bmm(candidate_news_vector,
-                                user_vector.unsqueeze(dim=-1)).squeeze(dim=-1)
+                                user_vector.unsqueeze(dim=-1)).squeeze(dim=-1)/user_vector.shape[-1]
         return probability
+
+class GraphAttentionLayer(nn.Module):
+    """
+    Simple GAT layer
+    图注意力层
+    """
+    def __init__(self, in_features, out_features, dropout, alpha, concat=True):
+        super(GraphAttentionLayer, self).__init__()
+        self.in_features = in_features   
+        self.out_features = out_features   
+        self.dropout = dropout    
+        self.alpha = alpha     
+        self.concat = concat   
+        
+        self.W = nn.Parameter(torch.zeros(size=(in_features, out_features)))  
+        nn.init.xavier_uniform_(self.W.data, gain=1.414)  
+        self.a = nn.Parameter(torch.zeros(size=(2*out_features, 1)))
+        nn.init.xavier_uniform_(self.a.data, gain=1.414)   
+        self.leakyrelu = nn.LeakyReLU(self.alpha)
+    
+    def forward(self, inp, adj):
+        """
+        inp: input_fea [N, in_features]  
+        adj: 
+        """
+        h = torch.mm(inp, self.W)   # [N, out_features]
+        N = h.size()[0]    # N 图的节点数
+        
+        a_input = torch.cat([h.repeat(1, N).view(N*N, -1), h.repeat(N, 1)], dim=1).view(N, -1, 2*self.out_features)
+        # [N, N, 2*out_features]
+        e = self.leakyrelu(torch.matmul(a_input, self.a).squeeze(2))
+        # [N, N, 1] => [N, N] 图注意力的相关系数（未归一化）
+        
+        zero_vec = -1e12 * torch.ones_like(e)    # 将没有连接的边置为负无穷
+        attention = torch.where(adj>0, e, zero_vec)   # [N, N]
+        # 表示如果邻接矩阵元素大于0时，则两个节点有连接，该位置的注意力系数保留，
+        # 否则需要mask并置为非常小的值，原因是softmax的时候这个最小值会不考虑。
+        attention = F.softmax(attention, dim=1)    # softmax形状保持不变 [N, N]，得到归一化的注意力权重！
+        attention = F.dropout(attention, self.dropout, training=self.training)   # dropout，防止过拟合
+        h_prime = torch.matmul(attention, h)  # [N, N].[N, out_features] => [N, out_features]
+        # 得到由周围节点通过注意力权重进行更新的表示
+        if self.concat:
+            return F.elu(h_prime)
+        else:
+            return h_prime 
+    
+    def __repr__(self):
+        return self.__class__.__name__ + ' (' + str(self.in_features) + ' -> ' + str(self.out_features) + ')'
+
+class GAT(nn.Module):
+    def __init__(self, n_feat, n_hid, n_class, dropout, alpha, n_heads):
+        """Dense version of GAT
+        n_heads 表示有几个GAL层，最后进行拼接在一起，类似self-attention
+        从不同的子空间进行抽取特征。
+        """
+        super(GAT, self).__init__()
+        self.dropout = dropout 
+        
+        # 定义multi-head的图注意力层
+        self.attentions = [GraphAttentionLayer(n_feat, n_hid, dropout=dropout, alpha=alpha, concat=True) for _ in range(n_heads)]
+        for i, attention in enumerate(self.attentions):
+            self.add_module('attention_{}'.format(i), attention)   # 加入pytorch的Module模块
+        # 输出层，也通过图注意力层来实现，可实现分类、预测等功能
+        self.out_att = GraphAttentionLayer(n_hid * n_heads, n_class, dropout=dropout,alpha=alpha, concat=False)
+    
+    def forward(self, x, adj):
+        x = F.dropout(x, self.dropout, training=self.training)   # dropout，防止过拟合
+        x = torch.cat([att(x, adj) for att in self.attentions], dim=1)  # 将每个head得到的表示进行拼接
+        x = F.dropout(x, self.dropout, training=self.training)   # dropout，防止过拟合
+        x = F.elu(self.out_att(x, adj))   # 输出并激活
+        return F.log_softmax(x, dim=1)  # log_softmax速度变快，保持数值稳定

@@ -14,7 +14,7 @@ parser.add_argument('-num-epochs', type=int, default=10, help='number of epochs 
 parser.add_argument('-batch-size', type=int, default=32, help='batch size for training [default: 64]')
 parser.add_argument('-click-size', type=int, default=30, help='history size for a user [default: 30]')
 parser.add_argument('-candidate-size', type=int, default=10, help='candidate size for a user [default: 10]')
-parser.add_argument('-real-size', type=int, default=3, help='positive news size for a user [default: 3]')
+parser.add_argument('-real-size', type=int, default=1, help='positive news size for a user [default: 1]')
 parser.add_argument('-refuse-size', type=int, default=3, help='the news refused to click by a user [default: 3]')
 parser.add_argument('-num-words-title', type=int, default=100, help='number of words for a news [default: 300]')
 parser.add_argument('-query-vector-dim', type=int, default=128, help='number of query vector\'s dimension [default: 128]')
@@ -36,6 +36,10 @@ parser.add_argument('-testzhihu', type=bool, default=False, help='the dataset te
 
 # model
 parser.add_argument('-dropout', type=float, default=0.5, help='the probability for dropout [default: 0.5]')
+parser.add_argument('-node-dropout', type=float, default=0.1, help='the probability for gnn node dropout [default: 0.1]')
+# parser.add_argument('-reg', type=float, default=0.00001, help='weight decay regularizer [default: 0.00001]')
+# parser.add_argument('--ssl_reg', default=1e-4, type=float, help='reg weight for ssl loss[default:0.0001]')
+parser.add_argument('--decay', default=0.001, type=float, help='weight decay rate [default: 0.001]')
 parser.add_argument('-refuse-rate', type=float, default=0.5, help='the rate of refuse feature [default: 0.5]')
 parser.add_argument('-max-norm', type=float, default=3.0, help='l2 constraint of parameters [default: 3.0]')
 parser.add_argument('-embedding-dim', type=int, default=198, help='number of embedding dimension [default: 196]')

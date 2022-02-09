@@ -81,18 +81,33 @@ class MODEL0(torch.nn.Module):
                 else:
                     candidate_news_vector_one=torch.cat((candidate_news_vector_one,padding),dim=0)
             candidate_news_vector=torch.cat((candidate_news_vector,candidate_news_vector_one[1:].unsqueeze(0)),dim=0)
-        click_probability = torch.softmax(self.click_predictor(candidate_news_vector,
-                                                 user_vector),dim=1)
-        last_probability = click_probability# -self.config.refuse_rate*refuse_probability
-        crossentropyloss=nn.CrossEntropyLoss()
-        loss=0
-        targets=torch.zeros((self.config.batch_size),dtype=torch.long).cuda()
-        # torch.cat((click_probability[:,0],click_probability[:,self.config.real_size:]),1)
+        click_probability = self.click_predictor(candidate_news_vector,
+                                                 user_vector)
+        last_probability = torch.softmax(click_probability,dim=-1)# -self.config.refuse_rate*refuse_probability
+        '''
+        def calcSSL(probability):
+            posScore = tf.exp(tf.reduce_sum(hyperLat * gnnLat, axis=1))
+            negScore = tf.reduce_sum(tf.exp(gnnLat @ tf.transpose(hyperLat)), axis=1)
+            uLoss = tf.reduce_sum(-tf.log(posScore / (negScore + 1e-8) + 1e-8))
+            return uLoss
         for i in range(0,self.config.real_size):
             loss+=crossentropyloss(torch.cat((click_probability[:,i:i+1],click_probability[:,self.config.real_size:]),1),targets)
-        # loss+=crossentropyloss(click_probability[:,:self.config.real_size],torch.zeros((self.config.batch_size,self.config.real_size),dtype=torch.long).cuda())
-        # loss= torch.mean(torch.sum(click_probability[:,self.config.real_size:],dim=1)) #self.LOSS(last_probability)
-        return last_probability,loss #, topic_classification_loss
+        # [1,2,3] [1,2,3]
+        # [4,4,4] [5,5,5]
+        
+        # batch_size * (1 + K + num_clicked_news_a_user), num_categories
+        y_pred = self.topic_predictor(
+            torch.cat((candidate_news_vector, clicked_news_vector),
+                      dim=1).view(-1, self.config.num_filters))
+        # batch_size * (1 + K + num_clicked_news_a_user)
+        y = torch.stack([x['category'] for x in candidate_news + clicked_news],
+                        dim=1).flatten().to(device)
+        class_weight = torch.ones(self.config.num_categories).to(device)
+        class_weight[0] = 0
+        criterion = nn.CrossEntropyLoss(weight=class_weight)
+        topic_classification_loss = criterion(y_pred, y)
+        '''
+        return last_probability,self.LOSS(last_probability),candidate_news_vector,user_vector#, topic_classification_loss
     
     def MRR(self,click_probability,debug=False):
         rank=torch.ones((self.config.batch_size,1),dtype=torch.int)
@@ -100,10 +115,10 @@ class MODEL0(torch.nn.Module):
         # print("mrr",click_probability.size(),real_max.size())
         for i in range(self.config.batch_size):
             for j in range(self.config.real_size,self.config.candidate_size):
-                if(click_probability[i,j].item()>=real_max[i].item()):
+                if(click_probability[i,j].item()>real_max[i].item()):
                     rank[i]+=1
             if i==0 and debug:
-                print("mrr",click_probability[i],rank[i])
+                print("mrr",click_probability[i],rank[i],real_max[i])
         mrr=torch.sum(1.0/rank)/len(rank)
         return mrr
     
@@ -135,8 +150,10 @@ class MODEL0(torch.nn.Module):
         # print(y_n.size())
         y_n=y_n.contiguous().view(self.config.batch_size,n)
         # print(y_p,y_n)
-        # print(y_p[0],y_n[0])       
-        score_tot=y_p-y_n# torch.gt(y_p,y_n)
+        # print(y_p[0],y_n[0])      
+        score_tot=-y_p+y_n+1.0
+        score_tot= torch.where(score_tot<0.0,torch.full_like(score_tot, 0.0), score_tot)
+        score_tot=torch.sum(score_tot)# torch.gt(y_p,y_n)
         '''
         for i in range(self.config.batch_size):
             # score=0
@@ -149,8 +166,9 @@ class MODEL0(torch.nn.Module):
                 print(click_probability[i],score_tot[i])
         '''
         # score_tot= torch.where(torch.isnan(score_tot), torch.full_like(score_tot, 0), score_tot)# score_tot**0.2
-        score_tot= torch.where(score_tot>0.4, torch.full_like(score_tot, 0.4), score_tot)
-        return torch.mean(score_tot)
+        # score_tot= torch.where(score_tot>0.5,torch.full_like(score_tot, 0.5), score_tot)
+        
+        return score_tot# torch.mean(score_tot)
     
     def AUC(self,click_probability,debug=False):
         n=self.config.real_size*(self.config.candidate_size-self.config.real_size)
@@ -365,7 +383,7 @@ class DotProductClickPredictor(torch.nn.Module):
         """
         # batch_size, candidate_size
         probability = torch.bmm(candidate_news_vector,
-                                user_vector.unsqueeze(dim=-1)).squeeze(dim=-1)
+                                user_vector.unsqueeze(dim=-1)).squeeze(dim=-1)/user_vector.shape[-1]
         return probability
         
 class ScaledDotProductAttention(nn.Module):

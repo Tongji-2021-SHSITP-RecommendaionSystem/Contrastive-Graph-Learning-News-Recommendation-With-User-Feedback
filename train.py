@@ -7,7 +7,7 @@ import data_pro
 def train(train_iter, model, args , test, news_content, content, news_entity, entity):
     if args.cuda:
         model.cuda()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.decay)
     steps = 0
     best_acc = 0
     last_step = 0
@@ -44,7 +44,7 @@ def train(train_iter, model, args , test, news_content, content, news_entity, en
                                                                              corrects.item(),auc))
             if steps % args.test_interval == 0 and steps!=0:
                 debug=False
-                if steps==200:
+                if (steps==200) or (steps==600):
                     debug = True
                 dev_acc = eval(model, args , test, news_content, content, news_entity, entity, debug)
                 if dev_acc > best_acc:
